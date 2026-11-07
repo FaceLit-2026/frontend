@@ -1,0 +1,187 @@
+// ─────────────────────────────────────────────
+//  app/admin/facial/settings.tsx — Ajustes de Reconocimiento Facial (Admin)
+//
+//  Pantalla accesible únicamente desde el botón "Ajustes" de
+//  app/admin/facial/index.tsx. Permite configurar la jornada del punto
+//  de reconocimiento: tiempo de registro, hora de salida y hora de
+//  apagado. El botón "Volver" regresa a la pantalla de configuración
+//  de sesión (facial/index), nunca al menú principal.
+//
+//  El tiempo de registro usa una lista fija, mientras que la hora de
+//  salida y la hora de apagado permiten entrada manual.
+// ─────────────────────────────────────────────
+import {
+    FACIAL_REGISTRATION_MINUTES_OPTIONS,
+} from '@/features/facial/types';
+import { useFacialRegistry } from '@/features/facial/useFacialRegistry';
+import { AppButton, SelectField, TimeInput } from '@/shared/components/ui';
+import { Colors } from '@/shared/constants/colors';
+import { Routes } from '@/shared/constants/routes';
+import { FontSize, FontWeight } from '@/shared/constants/typography';
+import { useAuth } from '@/shared/contexts/AuthContext';
+import { useTheme } from '@/shared/contexts/ThemeContext';
+import { useAppDialog } from '@/shared/hooks/useAppDialog';
+import { Ionicons } from '@expo/vector-icons';
+import { router } from 'expo-router';
+import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+
+export default function FacialSettingsScreen() {
+  const { theme, isDark } = useTheme();
+  const { t } = useTranslation();
+  const { user } = useAuth();
+  const { settings, saveSettings } = useFacialRegistry(user?.id);
+  const { alert, DialogUI } = useAppDialog();
+
+  const [registrationMinutes, setRegistrationMinutes] = useState(settings ? String(settings.registrationMinutes) : '');
+  const [exitTime, setExitTime] = useState(settings?.exitTime ?? '');
+  const [shutdownTime, setShutdownTime] = useState(settings?.shutdownTime ?? '');
+  const [errors, setErrors] = useState<{ registrationMinutes?: string; exitTime?: string; shutdownTime?: string }>({});
+
+  useEffect(() => {
+    setRegistrationMinutes(settings ? String(settings.registrationMinutes) : '');
+    setExitTime(settings?.exitTime ?? '');
+    setShutdownTime(settings?.shutdownTime ?? '');
+  }, [settings]);
+
+  const text = isDark ? Colors.dark.text : Colors.light.text;
+  const muted = isDark ? Colors.dark.textMuted : Colors.light.textMuted;
+  const cardBg = theme.surface;
+  const border = theme.border;
+  const bg = isDark ? Colors.dark.background : Colors.light.background;
+
+  const registrationOptions = FACIAL_REGISTRATION_MINUTES_OPTIONS.map(minutes => ({
+    value: String(minutes),
+    label: `${minutes} min`,
+  }));
+
+  const handleBack = () => {
+    router.replace(Routes.INSTRUCTOR.FACIAL as any);
+  };
+
+  const handleSave = async () => {
+    const newErrors: typeof errors = {};
+    const now = new Date();
+    const timeToMinutes = (value: string) => {
+      const [hours, minutes] = value.split(':').map(Number);
+      return Number.isFinite(hours) && Number.isFinite(minutes) ? hours * 60 + minutes : -1;
+    };
+    const currentMinutes = now.getHours() * 60 + now.getMinutes();
+    if (!registrationMinutes) newErrors.registrationMinutes = t('common.required');
+    if (!exitTime) newErrors.exitTime = t('common.required');
+    else if (timeToMinutes(exitTime) <= currentMinutes) newErrors.exitTime = 'La hora de salida debe ser posterior a la hora actual.';
+    if (!shutdownTime) newErrors.shutdownTime = t('common.required');
+    else if (shutdownTime === exitTime) newErrors.shutdownTime = t('facial.settings.validation.shutdownAfterExit');
+    else if (timeToMinutes(shutdownTime) <= currentMinutes) newErrors.shutdownTime = 'La hora de apagado debe ser posterior a la hora actual.';
+    else if (exitTime && timeToMinutes(shutdownTime) <= timeToMinutes(exitTime)) newErrors.shutdownTime = t('facial.settings.validation.shutdownAfterExit');
+
+    if (Object.keys(newErrors).length > 0) {
+      setErrors(newErrors);
+      return;
+    }
+    setErrors({});
+
+    const result = await saveSettings({
+      registrationMinutes: Number(registrationMinutes),
+      exitTime,
+      shutdownTime,
+    });
+
+    if (result.success) {
+      alert('✓', t('facial.settings.saveSuccess'), [
+        {
+          text: t('common.ok'),
+          onPress: () => router.replace(Routes.INSTRUCTOR.FACIAL as any),
+        },
+      ]);
+    } else {
+      alert(t('common.error'), t(result.error));
+    }
+  };
+
+  return (
+    <View style={[fs.safe, { backgroundColor: bg }]}>
+      {/* Header con flecha propia: regresa a la pantalla de configuración
+          de sesión (facial/index), no al menú principal ni al dashboard. */}
+      <View style={fs.header}>
+        <TouchableOpacity onPress={handleBack}>
+          <Ionicons name="arrow-back" size={22} color={text} />
+        </TouchableOpacity>
+        <View style={{ flex: 1, marginLeft: 8 }}>
+          <Text style={[fs.title, { color: text }]}>{t('facial.settings.title')}</Text>
+          <Text style={{ color: muted, fontSize: FontSize.xs, marginTop: 2 }}>
+            {t('facial.settings.subtitle')}
+          </Text>
+        </View>
+      </View>
+
+      <ScrollView contentContainerStyle={fs.scroll}>
+        <View style={fs.centerWrap}>
+          <View style={[fs.card, { backgroundColor: cardBg, borderColor: border }]}>
+            <View style={fs.cardHeader}>
+              <View style={[fs.cardIcon, { backgroundColor: theme.primary + '18' }]}>
+                <Ionicons name="options-outline" size={24} color={theme.primary} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[fs.formTitle, { color: text }]}>Ajustes de reconocimiento</Text>
+                <Text style={[fs.formSubtitle, { color: muted }]}>Configura los tiempos de registro de la jornada.</Text>
+              </View>
+            </View>
+            <SelectField
+              label={t('facial.settings.fields.registrationMinutes')}
+              value={registrationMinutes}
+              options={registrationOptions}
+              onSelect={v => { setRegistrationMinutes(v); setErrors(p => ({ ...p, registrationMinutes: '' })); }}
+              error={errors.registrationMinutes}
+              placeholder={t('facial.settings.placeholders.registrationMinutes')}
+            />
+            <TimeInput
+              label={t('facial.settings.fields.exitTime')}
+              value={exitTime}
+              onChange={v => {
+                setExitTime(v);
+                setErrors(p => ({ ...p, exitTime: '', shutdownTime: '' }));
+              }}
+              error={errors.exitTime}
+            />
+            <TimeInput
+              label={t('facial.settings.fields.shutdownTime')}
+              value={shutdownTime}
+              onChange={v => { setShutdownTime(v); setErrors(p => ({ ...p, shutdownTime: '' })); }}
+              error={errors.shutdownTime}
+            />
+
+            <AppButton title={t('common.save')} onPress={handleSave} style={{ marginTop: 20 }} />
+          </View>
+        </View>
+      </ScrollView>
+      {DialogUI}
+    </View>
+  );
+}
+
+const fs = StyleSheet.create({
+  safe: { flex: 1 },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  title: { fontSize: FontSize.xl, fontWeight: FontWeight.black },
+  scroll: { flexGrow: 1, padding: 16, paddingBottom: 40 },
+  centerWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: 420 },
+  card: {
+    width: '100%',
+    maxWidth: 500,
+    borderRadius: 16,
+    borderWidth: 1,
+    padding: 24,
+    alignItems: 'stretch',
+  },
+  cardHeader: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 20 },
+  cardIcon: { width: 48, height: 48, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  formTitle: { fontSize: FontSize.lg, fontWeight: FontWeight.black },
+  formSubtitle: { fontSize: FontSize.sm, marginTop: 4, lineHeight: 18 },
+});

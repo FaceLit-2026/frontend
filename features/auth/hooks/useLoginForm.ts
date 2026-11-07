@@ -1,0 +1,227 @@
+// ─────────────────────────────────────────────
+//  features/auth/hooks/useLoginForm.ts
+//
+//  RF-1.1 V3 / RF-1 V4 — Validaciones exhaustivas
+//  · Documento: entre 6 y 15 dígitos numéricos
+//  · Contraseña: 8–15 caracteres (sin validar complejidad en login)
+//  · Mensaje genérico cuando documento no existe (anti-enumeración)
+//  · Bloqueo temporal tras 5 intentos fallidos (RNF-1.3)
+//  · Prevención de doble submit (RNF-1.12)
+//  · Política de privacidad: una sola vez por documento (RF-1.1 V3)
+// ─────────────────────────────────────────────
+import { useAuth } from '@/shared/contexts/AuthContext';
+import { getPrivacyAcceptanceStatus } from '@/shared/services/authService';
+import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+
+// 6 a 15 dígitos — RF-1 V4 §1 y requisitos del negocio académico
+const DOCUMENT_REGEX = /^\d{6,15}$/;
+
+interface LoginForm {
+  document: string;
+  password: string;
+  accepted: boolean;
+  declined: boolean;
+}
+
+interface LoginErrors {
+  document: string;
+  password: string;
+  policy:   string;
+  /** Mensaje de bloqueo temporal de cuenta (RNF-1.3) */
+  blocked:  string;
+  /** Error de red/servidor — no es un problema de credenciales */
+  general:  string;
+}
+
+const initialForm: LoginForm   = { document: '', password: '', accepted: false, declined: false };
+const initialErrors: LoginErrors = { document: '', password: '', policy: '', blocked: '', general: '' };
+
+export function useLoginForm() {
+  const { t } = useTranslation();
+  const { login } = useAuth();
+
+  const [form, setForm]       = useState<LoginForm>(initialForm);
+  const [errors, setErrors]   = useState<LoginErrors>(initialErrors);
+  const [loading, setLoading] = useState(false);
+  const [alreadyAccepted, setAlreadyAccepted] = useState(false);
+  const [privacyStatusKnown, setPrivacyStatusKnown] = useState(false);
+  const privacyChecking = DOCUMENT_REGEX.test(form.document.trim()) && !privacyStatusKnown;
+  const privacyRequestRef = useRef(0);
+
+  // Prevención de doble submit — RF-1 V4 §7
+  const submittingRef = useRef(false);
+
+  // RF-1.1 V3: ocultar checkbox si ya hay aceptación previa para ese documento
+  const setField = <K extends keyof LoginForm>(key: K, value: LoginForm[K]) => {
+    setForm(prev => ({ ...prev, [key]: value }));
+    // Limpiar el error del campo que se está editando
+    setErrors(prev => ({ ...prev, [key]: '', blocked: '', general: '' }));
+  };
+
+  // ── Limpiar los caracteres no numéricos al pegar (RF-1 V4 §1 — paste)
+  const setDocumentField = (raw: string) => {
+    // strip todo lo que no sea dígito (guiones, puntos, espacios del copy-paste)
+    const cleaned = raw.replace(/\D/g, '');
+    if (cleaned !== form.document) {
+      privacyRequestRef.current += 1;
+      setPrivacyStatusKnown(false);
+      setAlreadyAccepted(false);
+      setForm(prev => ({ ...prev, accepted: false, declined: false }));
+    }
+    setField('document', cleaned);
+
+    // El campo conserva solo dígitos, pero informa al usuario si intentó
+    // escribir o pegar caracteres no permitidos.
+    if (/\D/.test(raw)) {
+      setErrors(prev => ({
+        ...prev,
+        document: t('login.errors.invalidDocument'),
+      }));
+    }
+  };
+
+  useEffect(() => {
+    const document = form.document.trim();
+    const requestId = ++privacyRequestRef.current;
+    setPrivacyStatusKnown(false);
+    setAlreadyAccepted(false);
+    setForm(prev => ({ ...prev, accepted: false, declined: false }));
+
+    if (!DOCUMENT_REGEX.test(document)) return undefined;
+
+    const timeout = setTimeout(async () => {
+      try {
+        const accepted = await getPrivacyAcceptanceStatus(document);
+        if (requestId !== privacyRequestRef.current) return;
+        setAlreadyAccepted(accepted);
+        setPrivacyStatusKnown(true);
+        setForm(prev => ({ ...prev, accepted }));
+      } catch {
+        if (requestId !== privacyRequestRef.current) return;
+        setAlreadyAccepted(false);
+        setPrivacyStatusKnown(true);
+        setErrors(prev => ({
+          ...prev,
+          general: t('login.errors.networkError'),
+        }));
+      }
+    }, 250);
+
+    return () => clearTimeout(timeout);
+  }, [form.document, t]);
+
+  const validate = (privacyAcceptedPreviously = alreadyAccepted): LoginErrors => {
+    const e = { ...initialErrors };
+    const doc = form.document.trim();
+
+    // ── Documento (RF-1 V4 §1) ──────────────────
+    if (!doc) {
+      e.document = t('login.errors.emptyDocument');
+    } else if (!/^\d+$/.test(doc)) {
+      // Carácter no numérico (no debería llegar aquí porque el campo filtra,
+      // pero se valida igual como defensa en profundidad)
+      e.document = t('login.errors.invalidDocument');
+    } else if (!DOCUMENT_REGEX.test(doc)) {
+      e.document = t('login.errors.documentLength');
+    }
+
+    // ── Contraseña (RF-1 V4 §2) ─────────────────
+    // En login NO se valida complejidad — solo longitud
+    if (!form.password) {
+      e.password = t('login.errors.emptyPassword');
+    } else if (form.password.includes(' ')) {
+      e.password = t('login.errors.passwordNoSpaces');
+    } else if (form.password.length < 8 || form.password.length > 15) {
+      e.password = t('login.errors.passwordLength');
+    }
+
+    // ── Política de privacidad (RF-1 V4 §3) ─────
+    if (!form.accepted && !privacyAcceptedPreviously && !form.declined) {
+      e.policy = t('login.errors.policyRequired');
+    }
+
+    return e;
+  };
+
+  const handleSubmit = async () => {
+    // Prevención de doble submit
+    if (submittingRef.current) return;
+
+    submittingRef.current = true;
+    setLoading(true);
+
+    try {
+      let acceptedPreviously = alreadyAccepted;
+      const document = form.document.trim();
+      if (DOCUMENT_REGEX.test(document) && !privacyStatusKnown) {
+        try {
+          acceptedPreviously = await getPrivacyAcceptanceStatus(document);
+          setAlreadyAccepted(acceptedPreviously);
+          setPrivacyStatusKnown(true);
+          setForm(prev => ({ ...prev, accepted: acceptedPreviously }));
+        } catch {
+          setErrors(prev => ({
+            ...prev,
+            general: t('login.errors.networkError'),
+          }));
+          return;
+        }
+      }
+
+      const nextErrors = validate(acceptedPreviously);
+      setErrors(nextErrors);
+      if (nextErrors.document || nextErrors.password || nextErrors.policy) return;
+
+      const result = await login(document, form.password, form.accepted || acceptedPreviously);
+
+      if (result.success) {
+        return;
+      }
+
+      // ── Bloqueo temporal (RNF-1.3 / RF-1 V4 §4) ──
+      if (result.locked) {
+        const mins = result.lockRemainingSeconds
+          ? Math.ceil(result.lockRemainingSeconds / 60)
+          : 15;
+        setErrors(prev => ({
+          ...prev,
+          blocked: t('login.errors.accountLocked', { minutes: mins }),
+        }));
+        return;
+      }
+
+      // ── Error de red/servidor — banner general, no error de campo ──
+      if (result.networkError) {
+        setErrors(prev => ({ ...prev, general: result.error || 'No se pudo conectar con el servidor.' }));
+        return;
+      }
+
+      if (result.privacyRejected) {
+        setErrors(prev => ({ ...prev, policy: t('login.errors.policyRequired') }));
+        return;
+      }
+
+      // ── Error genérico — no revelar si fue documento o contraseña (RF-1 V4 §1 nota seguridad) ──
+      setErrors(prev => ({
+        ...prev,
+        password: t('login.errors.invalidCredentials'),
+      }));
+    } finally {
+      setLoading(false);
+      submittingRef.current = false;
+    }
+  };
+
+  return {
+    form,
+    errors,
+    loading,
+    alreadyAccepted,
+    privacyStatusKnown,
+    privacyChecking,
+    setField,
+    setDocumentField,
+    handleSubmit,
+  };
+}

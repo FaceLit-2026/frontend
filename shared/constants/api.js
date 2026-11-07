@@ -1,0 +1,52 @@
+import { Platform } from 'react-native';
+import Constants from 'expo-constants';
+
+const defaultApiUrl = Platform.select({
+  android: 'http://10.0.2.2:8080',
+  ios: 'http://localhost:8080',
+  default: 'http://localhost:8080',
+});
+
+const getExpoHost = () => {
+  const hostUri =
+    Constants.expoConfig?.hostUri ||
+    Constants.manifest2?.extra?.expoClient?.hostUri ||
+    Constants.manifest?.debuggerHost;
+
+  if (!hostUri || typeof hostUri !== 'string') return null;
+  const host = hostUri.split(':')[0];
+  if (!host || host === 'localhost' || host === '127.0.0.1') return null;
+  return host;
+};
+
+const resolveLocalUrl = (configuredUrl, fallbackUrl) => {
+  const targetUrl = configuredUrl || fallbackUrl;
+
+  if (Platform.OS === 'web') {
+    const browserHost = globalThis?.location?.hostname;
+    if (
+      browserHost &&
+      browserHost !== 'localhost' &&
+      browserHost !== '127.0.0.1' &&
+      /localhost|127\.0\.0\.1/.test(targetUrl)
+    ) {
+      return targetUrl.replace(/localhost|127\.0\.0\.1/, browserHost);
+    }
+    return targetUrl;
+  }
+  if (!targetUrl) return fallbackUrl;
+  if (!/localhost|127\.0\.0\.1/.test(targetUrl)) return targetUrl;
+
+  const expoHost = getExpoHost();
+  if (expoHost) {
+    return targetUrl.replace(/localhost|127\.0\.0\.1/, expoHost);
+  }
+
+  if (Platform.OS === 'android') {
+    return targetUrl.replace(/localhost|127\.0\.0\.1/, '10.0.2.2');
+  }
+
+  return targetUrl;
+};
+
+export const API_URL = resolveLocalUrl(process.env.EXPO_PUBLIC_API_URL, defaultApiUrl);

@@ -1,0 +1,201 @@
+// ─────────────────────────────────────────────
+//  features/notifications/notificationsStore.ts
+//  RF-8 V4 — Store de notificaciones
+//
+//  Mismo patrón pub/sub que los demás stores del proyecto
+//  (useSyncExternalStore).
+//
+//  RF-8.1 — pushNotification() genera automáticamente la
+//  notificación con fecha/hora, canal y estado no-leído.
+//
+//  RF-8.3 — Las notificaciones 'app+email' marcan emailStatus
+//  como 'pending'; en producción este store llama al endpoint
+//  SMTP del backend. El mock las deja en 'pending' para que
+//  la UI las distinga.
+// ─────────────────────────────────────────────
+import {
+  NOTIFICATION_CHANNELS,
+  Notification,
+  NotificationMeta,
+  NotificationType,
+} from './types';
+import {
+  fetchNotifications,
+  markAllNotificationsReadRemote,
+  markNotificationReadRemote,
+  resolveFacialNotificationRemote,
+} from '@/shared/services/notificationService';
+import { getBogotaDateTimeParts } from '@/shared/utils/dates';
+
+type Listener = () => void;
+
+let notifications: Notification[] = [];
+let owner = '';
+let generation = 0;
+const listeners = new Set<Listener>();
+let loadedRemote = false;
+
+function emit() { listeners.forEach(l => l()); }
+
+export function subscribeNotifications(listener: Listener) {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+export function getNotificationsSnapshot(): Notification[] {
+  return notifications;
+}
+
+export function setNotificationsOwner(nextOwner: string): void {
+  if (owner === nextOwner) return;
+  owner = nextOwner;
+  generation += 1;
+  notifications = [];
+  loadedRemote = false;
+  emit();
+}
+
+export async function loadNotifications(): Promise<void> {
+  if (!owner) return;
+  const requestGeneration = generation;
+  try {
+    const result = await fetchNotifications();
+    if (requestGeneration !== generation) return;
+    notifications = result.filter(notification => notification.recipientUserId === owner);
+    loadedRemote = true;
+    emit();
+  } catch {
+    // Keep the last successful remote snapshot when a later refresh fails.
+  }
+}
+
+// ── Derivar categoría desde tipo ─────────────
+function categoryFromType(type: NotificationType): Notification['category'] {
+  if (type.startsWith('csv_'))            return 'csv';
+  if (type === 'learner_transferred')     return 'transfer';
+  if (type.startsWith('attendance_'))     return 'attendance';
+  if (type.startsWith('academic_'))       return 'academic';
+  if (type.startsWith('instructor_'))     return 'academic';
+  if (type.startsWith('apprentice_'))     return 'transfer';
+  if (type.startsWith('security_') || type === 'user_role_changed' || type === 'email_delivery_failed'
+    || type === 'password_changed' || type === 'account_status_changed'
+    || type === 'user_account_created' || type === 'user_profile_updated') return 'security';
+  if (type.startsWith('facial_'))         return 'facial';
+  return 'academic';
+}
+
+// ── RF-8.1 — Emitir una nueva notificación ───
+export function pushNotification(
+  type: NotificationType,
+  title: string,
+  message: string,
+  meta?: NotificationMeta,
+): Notification {
+  const now     = new Date();
+  const local = getBogotaDateTimeParts(now)!;
+  const channel = NOTIFICATION_CHANNELS[type];
+
+  const notification: Notification = {
+    id:       `n-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    type,
+    category: categoryFromType(type),
+    channel,
+    title,
+    message,
+    createdAt: now.toISOString(),
+    date: local.date,
+    time: local.time,
+    read:   false,
+    meta,
+    // RF-8.3: marcar como pendiente si el canal incluye correo
+    emailStatus: channel === 'app+email' ? 'pending' : undefined,
+  };
+
+  notifications = [notification, ...notifications]; // más reciente primero
+  emit();
+
+  // RF-8.3: en producción, aquí se dispararía la llamada al backend SMTP.
+  // api.post('/api/notifications/email', notification).then(() => {
+  //   markEmailSent(notification.id);
+  // }).catch(() => { /* quedará en 'pending' */ });
+
+  return notification;
+}
+
+// ── RF-8.2 — Marcar como leída ────────────────
+export function markNotificationRead(id: string): void {
+  const requestGeneration = generation;
+  if (loadedRemote) {
+    markNotificationReadRemote(id)
+      .then(remote => {
+        if (requestGeneration !== generation) return;
+        notifications = notifications.map(n => n.id === id ? remote : n);
+        emit();
+      })
+      .catch(() => undefined);
+  }
+}
+
+export function markAllNotificationsRead(): void {
+  const requestGeneration = generation;
+  if (loadedRemote) {
+    markAllNotificationsReadRemote()
+      .then(remote => {
+        if (requestGeneration !== generation) return;
+        notifications = remote;
+        emit();
+      })
+      .catch(() => undefined);
+  }
+}
+
+// ── RF-8.4 — Resolver solicitud de re-registro ──
+export async function resolveFacialRequest(
+  notificationId: string,
+  decision: 'accepted' | 'rejected',
+  decidedBy: string,
+  decidedByName?: string,
+): Promise<void> {
+  const requestGeneration = generation;
+  // Apply the decision only after the server validates the actor, state and scope.
+  await resolveFacialNotificationRemote(notificationId, decision);
+  if (requestGeneration !== generation) return;
+  const now = new Date().toISOString();
+  notifications = notifications.map(n =>
+    n.id === notificationId
+      ? {
+          ...n,
+          read: true,
+          meta: {
+            ...n.meta,
+            facialDecision: decision,
+            decidedBy,
+            decidedByName,
+            decidedAt: now,
+          },
+        }
+      : n,
+  );
+  emit();
+  await loadNotifications();
+}
+
+// ── RF-8.3 — Marcar correo como enviado ──────
+export function markEmailSent(id: string): void {
+  notifications = notifications.map(n =>
+    n.id === id ? { ...n, emailStatus: 'sent' as const } : n,
+  );
+  emit();
+}
+
+// ── Unread count (para badge en sidebar/campana) ──
+export function getUnreadCount(): number {
+  return notifications.filter(n => !n.read).length;
+}
+
+export function getRemoteUnreadCount(recipientUserId?: string): number {
+  if (!loadedRemote || !recipientUserId) return 0;
+  return notifications.filter(
+    notification => notification.recipientUserId === recipientUserId && !notification.read,
+  ).length;
+}

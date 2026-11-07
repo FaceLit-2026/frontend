@@ -103,7 +103,14 @@ function landingBody(text, readDependency) {
   return landingBody(readDependency(imported.moduleSpecifier.text.replace(/^@\//, '') + '.tsx'), readDependency);
 }
 const readCurrent = file => fs.readFileSync(path.join(root, file), 'utf8');
-const readHead = file => execFileSync('git', ['show', `HEAD:${file}`], { cwd: root, encoding: 'utf8' });
+const reviewedBaseline = process.env.FACELIT_FRONTEND_BASELINE_ROOT;
+const readHead = file => {
+  if (!reviewedBaseline) return execFileSync('git', ['show', `HEAD:${file}`], { cwd: root, encoding: 'utf8' });
+  const baselineRoot = path.resolve(reviewedBaseline);
+  const reference = path.resolve(baselineRoot, file);
+  assert.ok(reference.startsWith(baselineRoot + path.sep), 'Baseline reference must stay within the reviewed source');
+  return fs.readFileSync(reference, 'utf8');
+};
 const expectedLandingBody = landingBody(readHead('app/index.tsx'), readHead)
   .replace("backgroundColor: isDark ? '#02180E' : Colors.white", "backgroundColor: isDark ? '#02180E' : Colors.light.surface")
   .replace(": ['#FAFAFA', '#FFFFFF', '#F1F5F9']", ': Colors.light.gradient')

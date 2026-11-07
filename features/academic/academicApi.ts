@@ -127,25 +127,44 @@ const toFicha = (chip: BackendChip, learners: Learner[] = []): Ficha => ({
 async function fetchLearnersByChips(rawChips: BackendChip[], params: Record<string, unknown>) {
   if (rawChips.length === 0) return new Map<string, Learner[]>();
 
-  try {
-    const { data } = await api.get<BackendUserChip[]>('/api/academic/chips/apprentices', {
-      params: {
-        ...params,
-        ids: rawChips.map(chip => chip.idChip).join(','),
-      },
-    });
-
-    const learnersMap = new Map<string, Learner[]>();
-    rawChips.forEach(chip => learnersMap.set(chip.idChip, []));
-    data.forEach(item => {
-      const chipId = item.idChip;
-      learnersMap.set(chipId, [...(learnersMap.get(chipId) ?? []), toLearner(item)]);
-    });
-    return learnersMap;
-  } catch (error: any) {
-    if (error?.response?.status !== 404) throw error;
-    return fetchLearnersByChipsLegacy(rawChips, params);
+  // Mantener la query string por debajo de los límites comunes de Tomcat/proxy.
+  // Un solo UUID por ficha hacía que la URL excediera el límite cuando la carga
+  // académica contenía cientos de fichas, provocando que fallara todo el snapshot.
+  const batchSize = 80;
+  const concurrency = 4;
+  const chipBatches: BackendChip[][] = [];
+  for (let i = 0; i < rawChips.length; i += batchSize) {
+    chipBatches.push(rawChips.slice(i, i + batchSize));
   }
+
+  const learnersMap = new Map<string, Learner[]>();
+  rawChips.forEach(chip => learnersMap.set(chip.idChip, []));
+
+  for (let i = 0; i < chipBatches.length; i += concurrency) {
+    const batchResults = await Promise.all(chipBatches.slice(i, i + concurrency).map(async chips => {
+      try {
+        const { data } = await api.get<BackendUserChip[]>('/api/academic/chips/apprentices', {
+          params: {
+            ...params,
+            ids: chips.map(chip => chip.idChip).join(','),
+          },
+        });
+        return data.map(item => ({ chipId: item.idChip, learner: toLearner(item) }));
+      } catch (error: any) {
+        if (error?.response?.status !== 404) throw error;
+        const legacyMap = await fetchLearnersByChipsLegacy(chips, params);
+        return [...legacyMap.entries()].flatMap(([chipId, learners]) =>
+          learners.map(learner => ({ chipId, learner })),
+        );
+      }
+    }));
+
+    batchResults.flat().forEach(({ chipId, learner }) => {
+      learnersMap.set(chipId, [...(learnersMap.get(chipId) ?? []), learner]);
+    });
+  }
+
+  return learnersMap;
 }
 
 async function fetchLearnersByChipsLegacy(rawChips: BackendChip[], params: Record<string, unknown>) {

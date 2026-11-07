@@ -11,7 +11,7 @@
     "preview": {
       "distribution": "internal",
       "android": { "buildType": "apk" },
-      "env": { "EXPO_PUBLIC_API_URL": "https://facelit-backend.onrender.com" }
+      "env": { "EXPO_PUBLIC_API_URL": "https://facelit.tech" }
     },
     "production": {
       "autoIncrement": true

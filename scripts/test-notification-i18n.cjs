@@ -22,7 +22,7 @@ function load(relative) {
 
 const { localizeNotification, normalizeNotificationMeta, parseNotificationMeta, notificationDecisionActorName, profileChangeDetails } = load('features/notifications/localizeNotification.ts');
 const { NOTIFICATION_CHANNELS } = load('features/notifications/types.ts');
-const catalog = fs.readFileSync(path.resolve(root, '../FaceLit-Backend/src/main/java/com/FaceLit/backend/notification/service/NotificationCatalog.java'), 'utf8');
+const catalog = fs.readFileSync(path.resolve(root, '../backend/src/main/java/com/FaceLit/backend/notification/service/NotificationCatalog.java'), 'utf8');
 const types = [...catalog.matchAll(/Map\.entry\("([^"]+)"/g)].map(match => match[1]);
 const languages = ['es', 'en', 'fr', 'de'];
 const resources = Object.fromEntries(languages.map(lang => [lang, { translation: load(`shared/i18n/locales/${lang}.ts`).default }]));

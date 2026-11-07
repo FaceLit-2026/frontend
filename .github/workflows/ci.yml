@@ -18,43 +18,43 @@ jobs:
       - name: Checkout frontend
         uses: actions/checkout@v4
         with:
-          path: FaceLit
+          path: frontend
 
       # One existing frontend test imports NotificationCatalog.java as an external fixture.
       - name: Checkout backend test fixture
         uses: actions/checkout@v4
         with:
-          repository: FaceID-Proyect-2026/FaceLit-Backend
-          ref: 626d25f962edb861f5b0d3964ce6e2953382cec4
-          path: FaceLit-Backend
+          repository: FaceLit-2026/backend
+          ref: 8dc82435d2276c1043964d45ff6bcf07ddb635f4
+          path: backend
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
-          cache-dependency-path: FaceLit/package-lock.json
+          cache-dependency-path: frontend/package-lock.json
 
       - name: Install locked dependencies
-        working-directory: FaceLit
+        working-directory: frontend
         run: npm ci
 
       - name: Run frontend scripts and component tests with coverage
-        working-directory: FaceLit
+        working-directory: frontend
         env:
           NODE_V8_COVERAGE: coverage-v8
         run: npm test
 
       - name: Check TypeScript
-        working-directory: FaceLit
+        working-directory: frontend
         run: npx --no-install tsc --noEmit
 
       - name: Run lint
-        working-directory: FaceLit
+        working-directory: frontend
         run: npm run lint
 
       - name: Build web application
-        working-directory: FaceLit
+        working-directory: frontend
         run: npx --no-install expo export --platform web --output-dir .expo/ci-web
 
       - name: Upload frontend coverage data
@@ -63,6 +63,6 @@ jobs:
         with:
           name: frontend-test-coverage
           path: |
-            FaceLit/coverage-v8/
-            FaceLit/coverage/
+            frontend/coverage-v8/
+            frontend/coverage/
           if-no-files-found: warn
